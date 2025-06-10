@@ -1,0 +1,14 @@
+{
+  // VSCode の Python 拡張に仮想環境を教える
+  "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+
+  // PowerShell 統合ターミナルを実行ポリシー Bypass で起動
+  "terminal.integrated.profiles.windows": {
+    "PowerShell (Bypass)": {
+      "source": "PowerShell",
+      "icon": "terminal-powershell",
+      "args": ["-ExecutionPolicy", "Bypass", "-NoProfile"]
+    }
+  },
+  "terminal.integrated.defaultProfile.windows": "PowerShell (Bypass)"
+}
