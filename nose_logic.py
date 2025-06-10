@@ -35,7 +35,7 @@ def compute_nose_base_size(landmarks):
     x_cr, y_cr, _ = landmarks[454]
     face_width = np.linalg.norm([x_cr - x_cl, y_cr - y_cl])
     # 顔幅の 20% を鼻ベース幅とする
-    nose_width = int(face_width * 0.2)
+    nose_width = int(face_width * 0.9)
     return max(nose_width, 1)
 
 class NoseLogic:

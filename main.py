@@ -184,6 +184,7 @@ while True:
 
             top_left_x = int(x_n - final_size / 2)
             top_left_y = int(y_n - final_size / 2)
+            top_left_y = int(y_n - final_size * 0.5) - int(final_size * 0.2)
             overlay_image_alpha(frame, overlay_bgr, (top_left_x, top_left_y), alpha_mask)
 
     # (7) 顔ボックスを描画 (デバッグ用)
