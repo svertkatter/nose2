@@ -63,16 +63,23 @@ else:
 
 def update_sound_volumes(smile_score):
     """
-    smile_score: 0.0 ～ 1.0
+    改訂版：smile_score に応じて1つの音だけを鳴らす
     """
-    if not use_audio or sound_giggle is None:
+    if not use_audio:
         return
-    vol_giggle  = np.clip(smile_score / 0.15,  0.0, 1.0)
-    vol_chuckle = np.clip((smile_score - 0.15) / 0.15, 0.0, 1.0)
-    vol_big     = np.clip((smile_score - 0.30) / 0.70, 0.0, 1.0)
-    sound_giggle.set_volume(vol_giggle)
-    sound_chuckle.set_volume(vol_chuckle)
-    sound_big.set_volume(vol_big)
+
+    # 全て無音に
+    sound_giggle.set_volume(0.0)
+    sound_chuckle.set_volume(0.0)
+    sound_big.set_volume(0.0)
+
+    # 条件に応じて一つだけ音を出す
+    if smile_score < 0.1:
+        sound_big.set_volume(1.0)
+    elif smile_score < 0.25:
+        sound_giggle.set_volume(1.0)
+    else:
+        sound_chuckle.set_volume(1.0)
 
 # ------------------------------
 # 3) CentroidTracker と NoseLogic 初期化
@@ -196,6 +203,11 @@ while True:
     key = cv2.waitKey(1) & 0xFF
     if key == 27:  # ESC で終了
         break
+    # (9) smile_score を表示（デバッグ用）
+    for ID, score in smile_by_id.items():
+        cx, cy = objects[ID]
+        cv2.putText(frame, f"smile: {score:.2f}", (cx, cy - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
 cap.release()
 cv2.destroyAllWindows()
