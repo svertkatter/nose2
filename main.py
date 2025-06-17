@@ -198,8 +198,43 @@ while True:
     for (x, y, w_bb, h_bb) in face_boxes:
         cv2.rectangle(frame, (x, y), (x + w_bb, y + h_bb), (0, 255, 0), 1)
 
+    pygame.mixer.init
+
+    # 追加：pygameでスクリーンサイズ取得
+    pygame.display.set_mode((1, 1), pygame.NOFRAME)
+    info = pygame.display.Info()
+    # screen_w, screen_h = info.current_w, info.current_h
+    screen_w, screen_h = 1920, 1080
+
+    # (8) ウィンドウ表示の前に以下を追加
+    cv2.namedWindow("Nose Mirror", cv2.WND_PROP_FULLSCREEN)
+    cv2.setWindowProperty("Nose Mirror", cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN) #古ウインドウ
+    # cv2.resizeWindow("Nose Mirror", 1920, 1080) #フルHD固定
+
+    # (8) アスペクト比を保って黒背景に描画
+    frame_h, frame_w = frame.shape[:2]
+    frame_aspect = frame_w / frame_h
+    screen_aspect = screen_w / screen_h
+    
+    if frame_aspect > screen_aspect:
+    # 横長の場合：幅基準
+        new_w = screen_w
+        new_h = int(screen_w / frame_aspect)
+    else:
+    # 縦長の場合：高さ基準
+        new_h = screen_h
+        new_w = int(screen_h * frame_aspect)
+
+    # resized_frame = cv2.resize(frame, (new_w, new_h))
+    resized_frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+    canvas = np.zeros((screen_h, screen_w, 3), dtype=np.uint8)
+    x_offset = (screen_w - new_w) // 2
+    y_offset = (screen_h - new_h) // 2
+    canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized_frame
+
+
     # (8) ウィンドウ表示
-    cv2.imshow("Nose Mirror", frame)
+    cv2.imshow("Nose Mirror", canvas)
     key = cv2.waitKey(1) & 0xFF
     if key == 27:  # ESC で終了
         break
