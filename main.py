@@ -20,7 +20,7 @@ fd_model = mp_face_detection.FaceDetection(model_selection=0, min_detection_conf
 fm_model = mp_face_mesh.FaceMesh(
     static_image_mode=False,
     max_num_faces=6,
-    refine_landmarks=True,
+    refine_landmarks=False,
     min_detection_confidence=0.5,
     min_tracking_confidence=0.5
 )
@@ -87,7 +87,7 @@ nose_image_by_id = {}
 # ------------------------------
 # 6) カメラ開始
 # ------------------------------
-cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+cap = cv2.VideoCapture(2, cv2.CAP_DSHOW)
 if not cap.isOpened():
     print("Webカメラを開けませんでした。")
     exit(1)
@@ -157,8 +157,15 @@ while True:
     nose_scales = nose_logic.update(landmarks_by_id, smile_by_id)
 
     # 音声更新
-    avg_smile = np.mean(list(smile_by_id.values())) if smile_by_id else 0.0
-    update_sound_volumes(avg_smile)
+    # avg_smile = np.mean(list(smile_by_id.values())) if smile_by_id else 0.0
+    # update_sound_volumes(avg_smile)
+    if smile_by_id:
+        avg_smile = np.mean(list(smile_by_id.values()))
+        update_sound_volumes(avg_smile)
+    else:
+        sound_giggle.set_volume(0.0)
+        sound_chuckle.set_volume(0.0)
+        sound_big.set_volume(0.0)
 
     # 鼻描画
     for ID, pts in landmarks_by_id.items():
@@ -201,7 +208,7 @@ while True:
     canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = resized_frame
 
     # ウィンドウ表示
-    cv2.imshow("Nose Mirror", canvas)
+    cv2.imshow("Nose Mirror", frame)
     key = cv2.waitKey(1) & 0xFF
     if key == 27:
         break

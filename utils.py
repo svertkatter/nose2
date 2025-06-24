@@ -20,6 +20,9 @@ def overlay_image_alpha(img, img_overlay, pos, alpha_mask):
         x2 = min(x + w, img.shape[1])
         y2 = min(y + h, img.shape[0])
 
+        if x1 >= x2 or y1 >= y2:
+            return
+
         ex1 = x1 - x
         ey1 = y1 - y
         ex2 = ex1 + (x2 - x1)
@@ -28,6 +31,12 @@ def overlay_image_alpha(img, img_overlay, pos, alpha_mask):
         img_crop = img[y1:y2, x1:x2]
         overlay_crop = img_overlay[ey1:ey2, ex1:ex2]
         mask_crop = alpha_mask[ey1:ey2, ex1:ex2]
+
+        if overlay_crop.size == 0 or mask_crop.size == 0:
+            return
+        
+        h_crop, w_crop = overlay_crop.shape[:2]
+        mask_crop = mask_crop[:h_crop, :w_crop]
 
         inv_mask = 1.0 - mask_crop[..., None]
         img[y1:y2, x1:x2] = (overlay_crop * mask_crop[..., None] + img_crop * inv_mask).astype("uint8")
