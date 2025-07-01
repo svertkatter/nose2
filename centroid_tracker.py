@@ -9,6 +9,7 @@ class CentroidTracker:
         max_disappeared: 追跡中に顔が何フレーム連続で検出されなくても保持するか（閾値）。
         """
         self.nextObjectID = 0
+        self.availableIDs = []
         self.objects = dict()       # objectID -> (centroid_x, centroid_y)
         self.disappeared = dict()   # objectID -> 連続で検出されなかったフレーム数
         self.max_disappeared = max_disappeared
@@ -17,9 +18,16 @@ class CentroidTracker:
         """
         新しい顔を登録する
         """
-        self.objects[self.nextObjectID] = centroid
-        self.disappeared[self.nextObjectID] = 0
-        self.nextObjectID += 1
+        # self.objects[self.nextObjectID] = centroid
+        # self.disappeared[self.nextObjectID] = 0
+        # self.nextObjectID += 1
+        if self.availableIDs:
+            objectID = self.availableIDs.pop(0)
+        else:
+            objectID = self.nextObjectID
+            self.nextObjectID += 1
+        self.objects[objectID] = centroid
+        self.disappeared[objectID] = 0
 
     def deregister(self, objectID):
         """
@@ -27,6 +35,8 @@ class CentroidTracker:
         """
         del self.objects[objectID]
         del self.disappeared[objectID]
+        self.availableIDs.append(objectID)
+        self.availableIDs.sort()
 
     def update(self, rects):
         """
