@@ -10,11 +10,18 @@ from glob import glob
 from centroid_tracker import CentroidTracker
 from nose_logic import NoseLogic, compute_smile_score, compute_nose_base_size
 from utils import overlay_image_alpha
+from mediapipe.python.solutions.pose import PoseLandmark
 
 # HOG + SVMを使った複数人用ボディ検出器初期化
 #（OpenCVにバンドルされているものを使用）
 hog = cv2.HOGDescriptor()
 hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+
+# ボックスフィルター用のしきい値
+MIN_BODY_BOX_AREA = 5000 #これ以下の小さなボックスは捨てる
+VISIBILITY_THRESH = 0.5
+IOU_THRESH = 0.3
+FALLBACK_MIN_AREA = MIN_BODY_BOX_AREA
 
 # ------------------------------
 # 1) MediaPipe 初期化
@@ -91,9 +98,14 @@ if not nose_images:
 # ------------------------------
 # 5) その他初期化
 # ------------------------------
-ct = CentroidTracker(max_disappeared=100)
+ct = CentroidTracker(max_disappeared=300)
 nose_logic       = NoseLogic()
 nose_image_by_id = {}
+
+assigned_id = None
+assigned_img_idx = None
+two_person_last_switch = None
+TWO_PERSON_SWITCH_INTERVAL = 90.0
 
 # ------------------------------
 # 6) カメラ開始
@@ -120,6 +132,27 @@ while True:
     h, w, _   = frame.shape
     frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
+    pose_res = pose_model.process(frame_rgb)
+    pose_bbox = None
+    if pose_res.pose_landmarks:
+        lm = pose_res.pose_landmarks.landmark
+        key_ids = [
+            PoseLandmark.LEFT_SHOULDER.value,
+            PoseLandmark.RIGHT_SHOULDER.value,
+            PoseLandmark.LEFT_HIP.value,
+            PoseLandmark.RIGHT_HIP.value,
+        ]
+
+        avg_vis = sum(lm[i].visibility for i in key_ids) / len(key_ids)
+        if avg_vis > VISIBILITY_THRESH:
+            coords = [(int(l.x * w), int(l.y * h)) for l in lm]
+            xs, ys = zip(*coords)
+            p_xmin, p_xmax = max(min(xs), 0), min(max(xs), w)
+            p_ymin, p_ymax = max(min(ys), 0), min(max(ys), h)
+            p_bw, p_bh = p_xmax - p_xmin, p_ymax - p_ymin
+            if p_bw * p_bh >= MIN_BODY_BOX_AREA:
+                pose_bbox = (p_xmin, p_ymin, p_bw, p_bh)
+
     # 〈置換〉体トラッキング（Pose → CentroidTracker）
     # body_boxes = []
     # pose_res = pose_model.process(frame_rgb)
@@ -141,8 +174,31 @@ while True:
         scale=1.05
     )
 
+    #IoU計算
+    def bbox_iou(a, b):
+        xA = max(a[0], b[0]); yA = max(a[1], b[1])
+        xB = min(a[0]+a[2], b[0]+b[2]); yB = min(a[1]+a[3], b[1]+b[3])
+        interW = max(0, xB - xA); interH = max(0, yB - yA)
+        interA = interW * interH
+        union = a[2]*a[3] + b[2]*b[3] - interA
+        return interA / union if union > 0 else 0
+
+    body_boxes = []
+    for (x, y, bw, bh) in rects:
+        if bw * bh < MIN_BODY_BOX_AREA:
+            continue
+        if pose_bbox:
+            # px, py, pbw, pbh = pose_bbox
+            # if x <= px and y <= py and x + bw >= px + pbw and y + bh >= py + pbh:
+            #     body_boxes.append((x, y, bw, bh))
+            if bbox_iou((x, y, bw, bh), pose_bbox) > IOU_THRESH:
+                body_boxes.append((x, y, bw, bh))
+        else:
+            if bw * bh >= FALLBACK_MIN_AREA:
+                body_boxes.append((x, y, bw, bh))
+
     # CentroidTrackerにわたすリスト形式にそのままつめる
-    body_boxes = [(x, y, w, h) for (x, y, w, h) in rects]
+    # body_boxes = [(x, y, w, h) for (x, y, w, h) in rects]
     objects = ct.update(body_boxes)
 
     # 〈追加 デバッグ〉トラッキング枠とIDを表示
@@ -194,6 +250,44 @@ while True:
             if best_id is not None:
                 landmarks_by_id[best_id] = pts
                 smile_by_id[best_id]     = compute_smile_score(pts)
+    
+    # 鼻画像割当ロジック
+    cur_time = time.time()
+    current_faces = list(landmarks_by_id.keys())
+
+    # 1.新規割当
+    if assigned_id is None:
+        if len(current_faces) >= 1:
+            if len(current_faces) == 1:
+                assigned_id = current_faces[0]
+                two_person_last_switch = None
+            else:
+                assigned_id = random.choice(current_faces)
+                two_person_last_switch = cur_time
+            assigned_img_idx = random.randint(0, len(nose_images) - 1)
+
+    elif assigned_id not in current_faces:
+        if len(current_faces) == 0:
+            assigned_id = None
+            assigned_img_idx = None
+            two_person_last_switch = None
+        elif len(current_faces) == 1:
+            assigned_id = current_faces[0]
+            assigned_img_idx = random.randint(0, len(nose_images) - 1)
+            two_person_last_switch = None
+        else:
+            assigned_id = random.choice(current_faces)
+            assigned_img_idx = random.randint(0, len(nose_images) - 1)
+            two_person_last_switch = cur_time
+    elif len(current_faces) == 2:
+        if two_person_last_switch is None:
+            two_person_last_switch = cur_time
+        elif cur_time - two_person_last_switch >= TWO_PERSON_SWITCH_INTERVAL:
+            other = [i for i in current_faces if i != assigned_id]
+            if other:
+                assigned_id = other[0]
+            two_person_last_switch = cur_time
+    
 
     # 鼻スケール計算
     nose_scales = nose_logic.update(landmarks_by_id, smile_by_id)
@@ -208,18 +302,36 @@ while True:
         sound_big.set_volume(0.0)
 
     # 鼻描画
+    # for ID, pts in landmarks_by_id.items():
+    #     if ID not in nose_image_by_id:
+    #         continue
+    #     x_n, y_n, _     = pts[1]
+    #     base_size       = compute_nose_base_size(pts)
+    #     scale           = nose_scales.get(ID, 1.0)
+    #     final_size      = int(base_size * scale)
+    #     img_bgr, alpha  = nose_image_by_id[ID]
+    #     resized_bgr     = cv2.resize(img_bgr, (final_size, final_size))
+    #     resized_alpha   = cv2.resize(alpha,   (final_size, final_size))
+    #     top_left_x      = int(x_n - final_size/2)
+    #     top_left_y      = int(y_n - final_size*0.7)
+    #     overlay_image_alpha(frame, resized_bgr,
+    #                         (top_left_x, top_left_y),
+    #                         resized_alpha)
+
     for ID, pts in landmarks_by_id.items():
-        if ID not in nose_image_by_id:
+        if ID != assigned_id:
             continue
-        x_n, y_n, _     = pts[1]
-        base_size       = compute_nose_base_size(pts)
-        scale           = nose_scales.get(ID, 1.0)
-        final_size      = int(base_size * scale)
-        img_bgr, alpha  = nose_image_by_id[ID]
-        resized_bgr     = cv2.resize(img_bgr, (final_size, final_size))
-        resized_alpha   = cv2.resize(alpha,   (final_size, final_size))
-        top_left_x      = int(x_n - final_size/2)
-        top_left_y      = int(y_n - final_size*0.7)
+
+        x_n, y_n, _ = pts[1]
+        base_size = compute_nose_base_size(pts)
+        scale = nose_scales.get(ID, 1.0)
+        final_size = int(base_size * scale)
+        img_bgr = nose_images[assigned_img_idx]
+        alpha = nose_alphas[assigned_img_idx]
+        resized_bgr = cv2.resize(img_bgr, (final_size, final_size))
+        resized_alpha = cv2.resize(alpha, (final_size, final_size))
+        top_left_x = int(x_n - final_size/2)
+        top_left_y = int(y_n - final_size*0.7)
         overlay_image_alpha(frame, resized_bgr,
                             (top_left_x, top_left_y),
                             resized_alpha)

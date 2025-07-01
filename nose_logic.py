@@ -1,5 +1,3 @@
-# nose_logic.py
-
 import numpy as np
 import time
 
@@ -26,7 +24,9 @@ def compute_smile_score(landmarks):
     lift_left  = y_lcheek - y_lc
     lift_right = y_rcheek - y_rc
 
-    score = (mouth_width / face_width) + (lift_left + lift_right) / (2 * face_width) + (mouth_open / face_width)
+    score = (mouth_width / face_width)
+    score += (lift_left + lift_right) / (2 * face_width)
+    score += (mouth_open / face_width)
     score *= 0.5
     return np.clip(score, 0.0, 1.0)
 
@@ -46,6 +46,7 @@ class NoseLogic:
 
     def update(self, landmarks_by_id, smile_scores_by_id):
         cur_time = time.time()
+        # 一定時間ごとにフェーズを反転
         if cur_time - self.last_flip_time >= 90.0:
             self.invert_phase = not self.invert_phase
             self.last_flip_time = cur_time
@@ -55,29 +56,33 @@ class NoseLogic:
         ids = list(landmarks_by_id.keys())
         num_faces = len(ids)
         nose_scales = {}
+        invert = self.invert_phase
 
+        # 一人モード
         if num_faces <= 1:
             if self.one_enter_time is None:
                 self.one_enter_time = cur_time
             elapsed = cur_time - self.one_enter_time
             if elapsed >= 3.0:
                 t = min((elapsed - 3.0) / 90.0, 1.0)
-                base_scale = 3.0 + t * 5.0  # 最小3.0 → 最大8.0
+                base_scale = 3.0 + t * 5.0
             else:
                 base_scale = 3.0
 
             if ids:
                 id0 = ids[0]
-                s = smile_scores_by_id.get(id0, 0.0)
+                smile = smile_scores_by_id.get(id0, 0.0)
                 prev = self.scales.get(id0, base_scale)
-                if s > 0.05: # 笑顔のしきい値
-                    updated = min(prev + s * 0.5, 8.0)
+                if smile > 0.05:
+                    updated = min(prev + smile * 0.5, 8.0)
                     self.scales[id0] = max(prev, updated)
                 else:
                     self.scales[id0] = max(prev, base_scale)
                 nose_scales[id0] = self.scales[id0]
 
+        # 二人モード
         elif num_faces == 2:
+            # 面積で前後を判定
             areas = []
             for i in ids:
                 lm = landmarks_by_id[i]
@@ -86,46 +91,75 @@ class NoseLogic:
                 area = (max(xs) - min(xs)) * (max(ys) - min(ys))
                 areas.append((i, area))
             areas_sorted = sorted(areas, key=lambda x: x[1], reverse=True)
-            front_id = areas_sorted[0][0]
-            back_id  = areas_sorted[1][0]
+            front_id, back_id = areas_sorted[0][0], areas_sorted[1][0]
 
-            prev = self.scales.get(front_id, 3.0)
-            back_smile = smile_scores_by_id.get(back_id, 0.0)
-            if back_smile > 0.05: #笑顔のしきい値
-                updated = min(prev + back_smile * 0.4, 8.0)
-                self.scales[front_id] = max(prev, updated)
+            # 通常フェーズ: 前の人が変形、後ろはノーマル
+            if not invert:
+                prev = self.scales.get(front_id, 3.0)
+                front_smile = smile_scores_by_id.get(back_id, 0.0)
+                if front_smile > 0.05:
+                    updated = min(prev + front_smile * 0.4, 8.0)
+                    self.scales[front_id] = max(prev, updated)
+                else:
+                    self.scales[front_id] = max(prev, 3.0)
+                nose_scales[front_id] = self.scales[front_id]
+                nose_scales[back_id] = 1.0
+            # 反転フェーズ: 後ろの人が変形、前の人はノーマル
             else:
-                self.scales[front_id] = max(prev, 3.0)
+                prev = self.scales.get(back_id, 3.0)
+                front_smile = smile_scores_by_id.get(front_id, 0.0)
+                if front_smile > 0.05:
+                    updated = min(prev + front_smile * 0.4, 8.0)
+                    self.scales[back_id] = max(prev, updated)
+                else:
+                    self.scales[back_id] = max(prev, 3.0)
+                nose_scales[back_id] = self.scales[back_id]
+                nose_scales[front_id] = 1.0
 
-            nose_scales[front_id] = self.scales[front_id]
-            nose_scales[back_id] = 1.0
-
+        # 多人数モード
         else:
-            areas = []
-            for i in ids:
-                lm = landmarks_by_id[i]
-                xs = [p[0] for p in lm]
-                ys = [p[1] for p in lm]
-                area = (max(xs) - min(xs)) * (max(ys) - min(ys))
-                areas.append((i, area))
-            areas_sorted = sorted(areas, key=lambda x: x[1], reverse=True)
-            target_id = areas_sorted[0][0]
-            laugher_ids = [x[0] for x in areas_sorted[1:]]
+            # 通常フェーズ: 前の人だけ変形
+            if not invert:
+                areas = []
+                for i in ids:
+                    lm = landmarks_by_id[i]
+                    xs = [p[0] for p in lm]
+                    ys = [p[1] for p in lm]
+                    area = (max(xs) - min(xs)) * (max(ys) - min(ys))
+                    areas.append((i, area))
+                areas_sorted = sorted(areas, key=lambda x: x[1], reverse=True)
+                target_id = areas_sorted[0][0]
+                laugher_ids = [x[0] for x in areas_sorted[1:]]
 
-            if laugher_ids:
-                avg_smile = sum(smile_scores_by_id.get(i, 0.0) for i in laugher_ids) / len(laugher_ids)
+                if laugher_ids:
+                    avg_smile = sum(smile_scores_by_id.get(i, 0.0) for i in laugher_ids) / len(laugher_ids)
+                else:
+                    avg_smile = 0.0
+
+                prev = self.scales.get(target_id, 3.0)
+                if avg_smile > 0.05:
+                    updated = min(prev + avg_smile * 0.4, 8.0)
+                    self.scales[target_id] = max(prev, updated)
+                else:
+                    self.scales[target_id] = max(prev, 3.0)
+
+                nose_scales[target_id] = self.scales[target_id]
+                for i in laugher_ids:
+                    nose_scales[i] = 1.0
+            # 反転フェーズ: 全員変形
             else:
-                avg_smile = 0.0
-
-            prev = self.scales.get(target_id, 3.0)
-            if avg_smile > 0.05: #笑顔のしきい値
-                updated = min(prev + avg_smile * 0.4, 8.0)
-                self.scales[target_id] = max(prev, updated)
-            else:
-                self.scales[target_id] = max(prev, 3.0)
-
-            nose_scales[target_id] = self.scales[target_id]
-            for i in laugher_ids:
-                nose_scales[i] = 1.0
+                for i in ids:
+                    others = [j for j in ids if j != i]
+                    if others:
+                        avg_smile = sum(smile_scores_by_id.get(j, 0.0) for j in others) / len(others)
+                    else:
+                        avg_smile = 0.0
+                    prev = self.scales.get(i, 3.0)
+                    if avg_smile > 0.05:
+                        updated = min(prev + avg_smile * 0.4, 8.0)
+                        self.scales[i] = max(prev, updated)
+                    else:
+                        self.scales[i] = max(prev, 3.0)
+                    nose_scales[i] = self.scales[i]
 
         return nose_scales
