@@ -1,22 +1,27 @@
 import numpy as np
 import time
 
+
 def compute_smile_score(landmarks):
     """
     改良版：口角の上下位置の変化も考慮
     """
+    # 顔幅 (ランドマーク 234 - 454)
     x_cl, y_cl, _ = landmarks[234]
     x_cr, y_cr, _ = landmarks[454]
     face_width = np.linalg.norm([x_cr - x_cl, y_cr - y_cl])
 
+    # 口の横幅 (ランドマーク 61 - 291)
     x_l, y_l, _ = landmarks[61]
     x_r, y_r, _ = landmarks[291]
     mouth_width = np.linalg.norm([x_r - x_l, y_r - y_l])
 
+    # 口の開閉 (ランドマーク 13 - 14)
     _, y_top, _ = landmarks[13]
     _, y_bot, _ = landmarks[14]
     mouth_open = abs(y_bot - y_top)
 
+    # 頬の持ち上がり (234,61) と (454,291)
     _, y_lc, _ = landmarks[61]
     _, y_rc, _ = landmarks[291]
     _, y_lcheek, _ = landmarks[234]
@@ -24,142 +29,146 @@ def compute_smile_score(landmarks):
     lift_left  = y_lcheek - y_lc
     lift_right = y_rcheek - y_rc
 
-    score = (mouth_width / face_width)
+    score = mouth_width / face_width
     score += (lift_left + lift_right) / (2 * face_width)
-    score += (mouth_open / face_width)
+    score += mouth_open / face_width
     score *= 0.5
     return np.clip(score, 0.0, 1.0)
 
+
 def compute_nose_base_size(landmarks):
+    """
+    顔幅の20%を基本サイズとする
+    """
     x_cl, y_cl, _ = landmarks[234]
     x_cr, y_cr, _ = landmarks[454]
     face_width = np.linalg.norm([x_cr - x_cl, y_cr - y_cl])
-    nose_width = int(face_width * 0.2)
-    return max(nose_width, 1)
+    base = int(face_width * 0.2)
+    return max(base, 1)
+
 
 class NoseLogic:
+    """
+    鼻スケール算出ロジック
+    - 一人モード：時間経過で徐々にスケールアップ
+    - 二人モード：前後どちらも自分の笑顔に応じて変形
+                   90秒ごとに入れ替えフェーズ
+    - 多人数モード：前の人または全員変形フェーズ
+    """
+    FLIP_INTERVAL = 90.0
+    ONE_DELAY      =  3.0
+    BASE_SCALE     =  3.0
+    MAX_SCALE      =  8.0
+
     def __init__(self):
-        self.one_enter_time = None
-        self.scales = {}  # ID -> 最大スケール
-        self.invert_phase = False
         self.last_flip_time = time.time()
+        self.invert_phase   = False
+        self.one_enter_time = None
+        self.scales         = {}
 
-    def update(self, landmarks_by_id, smile_scores_by_id):
-        cur_time = time.time()
-        # 一定時間ごとにフェーズを反転
-        if cur_time - self.last_flip_time >= 90.0:
-            self.invert_phase = not self.invert_phase
-            self.last_flip_time = cur_time
+    def update(self, landmarks_by_id, smiles_by_id):
+        now = time.time()
+        if now - self.last_flip_time >= self.FLIP_INTERVAL:
+            self.invert_phase   = not self.invert_phase
+            self.last_flip_time = now
             self.one_enter_time = None
-            self.scales = {}
+            self.scales.clear()
 
-        ids = list(landmarks_by_id.keys())
-        num_faces = len(ids)
-        nose_scales = {}
-        invert = self.invert_phase
+        count = len(landmarks_by_id)
+        if count <= 1:
+            return self._one_mode(landmarks_by_id, smiles_by_id, now)
+        if count == 2:
+            return self._two_mode(landmarks_by_id, smiles_by_id)
+        return self._multi_mode(landmarks_by_id, smiles_by_id)
 
-        # 一人モード
-        if num_faces <= 1:
-            if self.one_enter_time is None:
-                self.one_enter_time = cur_time
-            elapsed = cur_time - self.one_enter_time
-            if elapsed >= 3.0:
-                t = min((elapsed - 3.0) / 90.0, 1.0)
-                base_scale = 3.0 + t * 5.0
-            else:
-                base_scale = 3.0
-
-            if ids:
-                id0 = ids[0]
-                smile = smile_scores_by_id.get(id0, 0.0)
-                prev = self.scales.get(id0, base_scale)
-                if smile > 0.05:
-                    updated = min(prev + smile * 0.5, 8.0)
-                    self.scales[id0] = max(prev, updated)
-                else:
-                    self.scales[id0] = max(prev, base_scale)
-                nose_scales[id0] = self.scales[id0]
-
-        # 二人モード
-        elif num_faces == 2:
-            # 面積で前後を判定
-            areas = []
-            for i in ids:
-                lm = landmarks_by_id[i]
-                xs = [p[0] for p in lm]
-                ys = [p[1] for p in lm]
-                area = (max(xs) - min(xs)) * (max(ys) - min(ys))
-                areas.append((i, area))
-            areas_sorted = sorted(areas, key=lambda x: x[1], reverse=True)
-            front_id, back_id = areas_sorted[0][0], areas_sorted[1][0]
-
-            # 通常フェーズ: 前の人が変形、後ろはノーマル
-            if not invert:
-                prev = self.scales.get(front_id, 3.0)
-                front_smile = smile_scores_by_id.get(back_id, 0.0)
-                if front_smile > 0.05:
-                    updated = min(prev + front_smile * 0.4, 8.0)
-                    self.scales[front_id] = max(prev, updated)
-                else:
-                    self.scales[front_id] = max(prev, 3.0)
-                nose_scales[front_id] = self.scales[front_id]
-                nose_scales[back_id] = 1.0
-            # 反転フェーズ: 後ろの人が変形、前の人はノーマル
-            else:
-                prev = self.scales.get(back_id, 3.0)
-                front_smile = smile_scores_by_id.get(front_id, 0.0)
-                if front_smile > 0.05:
-                    updated = min(prev + front_smile * 0.4, 8.0)
-                    self.scales[back_id] = max(prev, updated)
-                else:
-                    self.scales[back_id] = max(prev, 3.0)
-                nose_scales[back_id] = self.scales[back_id]
-                nose_scales[front_id] = 1.0
-
-        # 多人数モード
+    def _one_mode(self, landmarks, smiles, now):
+        if self.one_enter_time is None:
+            self.one_enter_time = now
+        elapsed = now - self.one_enter_time
+        if elapsed >= self.ONE_DELAY:
+            t = min((elapsed - self.ONE_DELAY) / self.FLIP_INTERVAL, 1.0)
+            base = self.BASE_SCALE + t * 5.0
         else:
-            # 通常フェーズ: 前の人だけ変形
-            if not invert:
-                areas = []
-                for i in ids:
-                    lm = landmarks_by_id[i]
-                    xs = [p[0] for p in lm]
-                    ys = [p[1] for p in lm]
-                    area = (max(xs) - min(xs)) * (max(ys) - min(ys))
-                    areas.append((i, area))
-                areas_sorted = sorted(areas, key=lambda x: x[1], reverse=True)
-                target_id = areas_sorted[0][0]
-                laugher_ids = [x[0] for x in areas_sorted[1:]]
+            base = self.BASE_SCALE
 
-                if laugher_ids:
-                    avg_smile = sum(smile_scores_by_id.get(i, 0.0) for i in laugher_ids) / len(laugher_ids)
-                else:
-                    avg_smile = 0.0
-
-                prev = self.scales.get(target_id, 3.0)
-                if avg_smile > 0.05:
-                    updated = min(prev + avg_smile * 0.4, 8.0)
-                    self.scales[target_id] = max(prev, updated)
-                else:
-                    self.scales[target_id] = max(prev, 3.0)
-
-                nose_scales[target_id] = self.scales[target_id]
-                for i in laugher_ids:
-                    nose_scales[i] = 1.0
-            # 反転フェーズ: 全員変形
+        scales = {}
+        if landmarks:
+            i = next(iter(landmarks))
+            prev  = self.scales.get(i, base)
+            smile = smiles.get(i, 0.0)
+            if smile > 0.05:
+                updated = min(prev + smile * 0.5, self.MAX_SCALE)
+                self.scales[i] = max(prev, updated)
             else:
-                for i in ids:
-                    others = [j for j in ids if j != i]
-                    if others:
-                        avg_smile = sum(smile_scores_by_id.get(j, 0.0) for j in others) / len(others)
-                    else:
-                        avg_smile = 0.0
-                    prev = self.scales.get(i, 3.0)
-                    if avg_smile > 0.05:
-                        updated = min(prev + avg_smile * 0.4, 8.0)
-                        self.scales[i] = max(prev, updated)
-                    else:
-                        self.scales[i] = max(prev, 3.0)
-                    nose_scales[i] = self.scales[i]
+                self.scales[i] = max(prev, base)
+            scales[i] = self.scales[i]
+        return scales
 
-        return nose_scales
+    def _two_mode(self, landmarks, smiles):
+        # 前後判定（面積ベース）
+        areas = []
+        for i, lm in landmarks.items():
+            xs = [p[0] for p in lm]; ys = [p[1] for p in lm]
+            areas.append((i, (max(xs)-min(xs))*(max(ys)-min(ys))))
+        areas.sort(key=lambda x: x[1], reverse=True)
+        front, back = areas[0][0], areas[1][0]
+
+        scales = {}
+        # 通常フェーズ：前後どちらも自分の笑顔に応じて変形
+        if not self.invert_phase:
+            for i in (front, back):
+                prev  = self.scales.get(i, self.BASE_SCALE)
+                smile = smiles.get(i, 0.0)
+                if smile > 0.05:
+                    updated = min(prev + smile * 0.4, self.MAX_SCALE)
+                    self.scales[i] = max(prev, updated)
+                else:
+                    self.scales[i] = max(prev, self.BASE_SCALE)
+                scales[i] = self.scales[i]
+        else:
+            # 反転フェーズ：後ろだけ変形、前はノーマル
+            prev  = self.scales.get(back, self.BASE_SCALE)
+            smile = smiles.get(back, 0.0)
+            if smile > 0.05:
+                updated = min(prev + smile * 0.4, self.MAX_SCALE)
+                self.scales[back] = max(prev, updated)
+            else:
+                self.scales[back] = max(prev, self.BASE_SCALE)
+            scales[back]  = self.scales[back]
+            scales[front] = 1.0
+        return scales
+
+    def _multi_mode(self, landmarks, smiles):
+        ids = list(landmarks.keys())
+        areas = []
+        for i in ids:
+            xs = [p[0] for p in landmarks[i]]; ys = [p[1] for p in landmarks[i]]
+            areas.append((i, (max(xs)-min(xs))*(max(ys)-min(ys))))
+        areas.sort(key=lambda x: x[1], reverse=True)
+        front = areas[0][0]
+
+        scales = {}
+        if not self.invert_phase:
+            others = [i for i in ids if i != front]
+            avg_smile = sum(smiles.get(j,0.0) for j in others)/len(others) if others else 0.0
+            prev = self.scales.get(front, self.BASE_SCALE)
+            if avg_smile > 0.05:
+                updated = min(prev + avg_smile * 0.4, self.MAX_SCALE)
+                self.scales[front] = max(prev, updated)
+            else:
+                self.scales[front] = max(prev, self.BASE_SCALE)
+            scales[front] = self.scales[front]
+            for i in others:
+                scales[i] = 1.0
+        else:
+            for i in ids:
+                others = [j for j in ids if j != i]
+                avg_smile = sum(smiles.get(j,0.0) for j in others)/len(others) if others else 0.0
+                prev = self.scales.get(i, self.BASE_SCALE)
+                if avg_smile > 0.05:
+                    updated = min(prev + avg_smile * 0.4, self.MAX_SCALE)
+                    self.scales[i] = max(prev, updated)
+                else:
+                    self.scales[i] = max(prev, self.BASE_SCALE)
+                scales[i] = self.scales[i]
+        return scales
