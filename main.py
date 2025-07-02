@@ -26,6 +26,9 @@ IOU_THRESH               = 0.3
 FALLBACK_MIN_AREA        = MIN_BODY_BOX_AREA
 TWO_PERSON_SWITCH_INTERVAL = 90.0  # 二人モードで入れ替え
 
+prev_mode = None
+prev_count = 0
+
 # MediaPipe Pose
 mp_pose    = mp.solutions.pose
 pose_model = mp_pose.Pose(
@@ -228,6 +231,7 @@ while True:
 
     # 鼻スケール更新・音声更新
     nose_scales = nose_logic.update(landmarks_by_id, smile_by_id)
+
     if smile_by_id:
         avg_smile = np.mean(list(smile_by_id.values()))
         update_sound_volumes(avg_smile)
@@ -235,6 +239,22 @@ while True:
         sound_giggle.set_volume(0.0)
         sound_chuckle.set_volume(0.0)
         sound_big.set_volume(0.0)
+    
+    # インターバルリセット
+    current_count = len(landmarks_by_id)
+    now = time.time()
+    if prev_count > 1 and current_count <= 1:
+        nose_logic.last_flip_time = now
+    prev_count = current_count
+    #
+
+    # デバッグ表示
+    elapsed = now - nose_logic.last_flip_time
+    remaining = max(0.0, nose_logic.FLIP_INTERVAL - elapsed)
+    cv2.putText(frame, f"MODE: {current_count}人", (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
+    cv2.putText(frame, f"Flip in; {remaining:.1f}s", (10, 60),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,255,0), 2)
 
     # 鼻オーバーレイ
     if assigned_id in landmarks_by_id:
@@ -242,6 +262,15 @@ while True:
         x_n, y_n, _ = pts[1]
         base = compute_nose_base_size(pts)
         scale = nose_scales.get(assigned_id, 1.0)
+        
+        if len(landmarks_by_id) == 2:
+            other_id = next(i for i in landmarks_by_id.keys() if i != assigned_id)
+            scale = nose_scales.get(other_id, 1.0)
+
+        elif len(landmarks_by_id) == 3:
+            other_id = [i for i in landmarks_by_id.keys() if i != assigned_id]
+            scale = max(nose_scales.get(i, 1.0) for i in other_id)
+
         size  = int(base * scale)
         img   = nose_images[assigned_img_idx]
         alpha = nose_alphas[assigned_img_idx]
